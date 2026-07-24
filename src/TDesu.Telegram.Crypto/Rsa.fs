@@ -3,6 +3,7 @@
 open System
 open System.Numerics
 open System.Collections.Generic
+open System.Security.Cryptography
 open TDesu.FSharp
 open TDesu.FSharp.Operators
 open TDesu.FSharp.Buffers
@@ -21,11 +22,20 @@ module Rsa =
         Array.init (hex.Length / 2) (fun i ->
             Convert.ToByte(hex.Substring(i * 2, 2), 16))
 
-    /// Telegram production RSA public keys (current fingerprints advertised by prod DCs).
-    /// Encryption uses the classic scheme (sha1(data)+data+padding then raw RSA); these
-    /// moduli are the canonical 256-byte values — verified by recomputing each fingerprint.
+    /// Telegram production RSA public keys, in the order prod DCs advertise them in resPQ.
+    /// The first key (0xd09d1d85de64fd85) is the current key the servers expect for the RSA_PAD
+    /// scheme; the following two are legacy keys kept for the classic sha1(data)+data scheme.
+    /// Each modulus is the canonical 256-byte value — verified by recomputing its fingerprint.
     let publicKeys: RsaPublicKey list =
         [
+            {
+                // 0xd09d1d85de64fd85 — RSA_PAD key
+                Fingerprint = 0xd09d1d85de64fd85L
+                Modulus =
+                    hexToBytes
+                        "E8BB3305C0B52C6CF2AFDF7637313489E63E05268E5BADB601AF417786472E5F93B85438968E20E6729A301C0AFC121BF7151F834436F7FDA680847A66BF64ACCEC78EE21C0B316F0EDAFE2F41908DA7BD1F4A5107638EEB67040ACE472A14F90D9F7C2B7DEF99688BA3073ADB5750BB02964902A359FE745D8170E36876D4FD8A5D41B2A76CBFF9A13267EB9580B2D06D10357448D20D9DA2191CB5D8C93982961CDFDEDA629E37F1FB09A0722027696032FE61ED663DB7A37F6F263D370F69DB53A0DC0A1748BDAAFF6209D5645485E6E001D1953255757E4B8E42813347B11DA6AB500FD0ACE7E6DFA3736199CCAF9397ED0745A427DCFA6CD67BCB1ACFF3"
+                Exponent = [| 0x01uy; 0x00uy; 0x01uy |] // 65537
+            }
             {
                 // 0x0bc35f3509f7b7a5
                 Fingerprint = 0x0bc35f3509f7b7a5L
@@ -93,3 +103,45 @@ module Rsa =
             Bytes.concat2 (Array.zeroCreate (modulusLen - be.Length)) be
         else
             be
+
+    /// RSA_PAD encryption — MTProto's current, hardened scheme for p_q_inner_data. The classic
+    /// `encrypt` above (sha1(data)+data, raw RSA) is retained for callers that need it, but new
+    /// code should prefer this: the payload length is hidden, the data is AES-IGE wrapped under a
+    /// fresh random key, and the 256-byte block is re-rolled until it is below the RSA modulus.
+    /// `data` (the serialized inner block) must be at most 144 bytes.
+    let encryptPad (data: byte[]) (key: RsaPublicKey) : byte[] =
+        if data.Length > 144 then
+            invalidArg (nameof data) "RSA_PAD payload must be at most 144 bytes"
+
+        let sha256 (b: byte[]) =
+            use h = SHA256.Create()
+            h.ComputeHash b
+
+        let toUnsigned (be: byte[]) =
+            let le = Array.copy be
+            Array.Reverse(le)
+            BigInteger(Bytes.concat2 le [| 0uy |])
+
+        let modulusBI = toUnsigned key.Modulus
+
+        // data_with_padding (192) -> reversed -> + SHA256(temp_key+data_with_padding) (224) ->
+        // AES-IGE(temp_key, 0) -> temp_key XOR SHA256(aes) ++ aes (256). Retry if >= modulus.
+        let rec build () =
+            let padding = Array.zeroCreate<byte> (192 - data.Length)
+            RandomNumberGenerator.Fill(padding)
+            let dataWithPadding = Bytes.concat2 data padding
+            let dataPadReversed = Array.rev dataWithPadding
+
+            let tempKey = Array.zeroCreate<byte> 32
+            RandomNumberGenerator.Fill(tempKey)
+
+            let dataWithHash =
+                Bytes.concat2 dataPadReversed (sha256 (Bytes.concat2 tempKey dataWithPadding))
+
+            let aesEncrypted = AesIge.encrypt dataWithHash tempKey (Array.zeroCreate 32)
+            let tempKeyXor = Array.map2 (^^^) tempKey (sha256 aesEncrypted)
+            let keyAesEncrypted = Bytes.concat2 tempKeyXor aesEncrypted
+
+            if toUnsigned keyAesEncrypted >= modulusBI then build () else keyAesEncrypted
+
+        encrypt (build ()) key

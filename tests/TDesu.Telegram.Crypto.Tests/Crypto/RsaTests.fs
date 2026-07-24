@@ -43,6 +43,7 @@ module RsaTests =
         let fps = Rsa.publicKeys |> List.map (fun k -> k.Fingerprint) |> Set.ofList
         Assert.That(fps.Contains 0x0bc35f3509f7b7a5L, Is.True)
         Assert.That(fps.Contains 0xc3b42b026ce86b21L, Is.True)
+        Assert.That(fps.Contains 0xd09d1d85de64fd85L, Is.True)
 
     [<Test>]
     let ``production key exponent is 65537`` () =
@@ -102,3 +103,20 @@ module RsaTests =
     let ``hexToBytes with spaces`` () =
         let bytes = Rsa.hexToBytes "DE AD BE EF"
         equals bytes [| 0xDEuy; 0xADuy; 0xBEuy; 0xEFuy |]
+
+    [<Test>]
+    let ``encryptPad produces 256-byte output`` () =
+        let key = Rsa.publicKeys |> List.head
+        equals (Rsa.encryptPad (Array.zeroCreate 96) key).Length 256
+
+    [<Test>]
+    let ``encryptPad is randomized across calls`` () =
+        let key = Rsa.publicKeys |> List.head
+        let data = Array.zeroCreate 96
+        notEquals (Rsa.encryptPad data key) (Rsa.encryptPad data key)
+
+    [<Test>]
+    let ``encryptPad rejects data over 144 bytes`` () =
+        let key = Rsa.publicKeys |> List.head
+        Assert.Throws<System.ArgumentException>(fun () -> Rsa.encryptPad (Array.zeroCreate 145) key |> ignore)
+        |> ignore

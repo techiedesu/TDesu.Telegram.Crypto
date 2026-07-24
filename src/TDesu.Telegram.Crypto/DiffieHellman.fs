@@ -54,59 +54,100 @@ module DiffieHellman =
         let result = BigInteger.ModPow(gBBI, aBI, pBI)
         fromBigInteger result 256
 
-    /// Validate that g_a or g_b is in range (1, p-1) per MTProto 2.0 spec.
+    /// Validate that g_a or g_b lies within [2^{2048-64}, p - 2^{2048-64}], the stricter range
+    /// recommended by the MTProto 2.0 security guidelines. This rejects the degenerate
+    /// small-subgroup values (0, 1, p-1) and any value close enough to the bounds to leak the
+    /// exponent; the minimal 1 < g_a < p-1 rule alone is not sufficient.
     let validateGARange (ga: byte[]) (p: byte[]) : bool =
         let gaInt = toBigInteger ga
         let pInt = toBigInteger p
-        gaInt > BigInteger.One && gaInt < (pInt - BigInteger.One)
+        let margin = BigInteger.One <<< (2048 - 64)
+        gaInt >= margin && gaInt <= (pInt - margin)
 
-    /// Validate DH parameters (g, p security checks)
-    let validateDhParams (g: int) (p: byte[]) : bool =
-        let pBI = toBigInteger p
+    // Cryptographically secure RNG for Miller-Rabin witnesses.
+    let private rng = RandomNumberGenerator.Create()
 
-        // p must be a positive number large enough (at least 2048 bits = 256 bytes)
-        if pBI <= BigInteger.One then false
-        elif p.Length < 256 then false
+    /// Uniform BigInteger in [0, m).
+    let private randomBelow (m: BigInteger) : BigInteger =
+        let mBytes = m.ToByteArray() // little-endian, two's complement
+        let buf = Array.zeroCreate<byte> (mBytes.Length + 1)
+        rng.GetBytes(buf)
+        buf[buf.Length - 1] <- 0uy // force a non-negative interpretation
+        BigInteger(buf) % m
+
+    /// Miller-Rabin probabilistic primality test with cryptographically random bases.
+    /// Random bases (not fixed witnesses) are required because dh_prime is attacker-chosen;
+    /// the adversarial error probability is 4^-rounds.
+    let private isProbablePrime (n: BigInteger) (rounds: int) : bool =
+        if n < BigInteger 2 then false
+        elif n = BigInteger 2 || n = BigInteger 3 then true
+        elif n.IsEven then false
         else
+            let nm1 = n - BigInteger.One
+            let mutable d = nm1
+            let mutable r = 0
+            while d.IsEven do
+                d <- d >>> 1
+                r <- r + 1
 
-        // p must be odd (prime)
-        if pBI.IsEven then false
-        else
+            let mutable probablyPrime = true
+            let mutable round = 0
+            while probablyPrime && round < rounds do
+                let a = BigInteger 2 + randomBelow (n - BigInteger 3) // base in [2, n-2]
+                let mutable x = BigInteger.ModPow(a, d, n)
+                if x <> BigInteger.One && x <> nm1 then
+                    let mutable j = 1
+                    let mutable sawMinusOne = false
+                    while not sawMinusOne && j < r do
+                        x <- BigInteger.ModPow(x, BigInteger 2, n)
+                        if x = nm1 then sawMinusOne <- true
+                        j <- j + 1
+                    if not sawMinusOne then probablyPrime <- false
+                round <- round + 1
 
-        // (p - 1) / 2 should also be odd (safe prime check: q = (p-1)/2 is odd)
-        let q = (pBI - BigInteger.One) / (BigInteger 2)
-        if q.IsEven then false
-        else
+            probablyPrime
 
-        // g must be a valid generator value
-        if g < 2 then false
-        else
+    // Safe-prime verification is expensive, so successful results are memoised by prime.
+    // Only positive results are cached (a tiny set in practice), so a malicious server cannot
+    // fill memory with distinct rejected primes.
+    let private safePrimeCache =
+        System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
-        // Basic range checks for g
-        match g with
-        | 2 ->
-            // p mod 8 == 7
-            let pMod8 = int (pBI % (BigInteger 8))
-            pMod8 = 7
-        | 3 ->
-            // p mod 3 == 2
-            let pMod3 = int (pBI % (BigInteger 3))
-            pMod3 = 2
-        | 4 ->
-            // No additional requirement beyond safe prime
-            true
-        | 5 ->
-            // p mod 5 == 1 or p mod 5 == 4
-            let pMod5 = int (pBI % (BigInteger 5))
-            pMod5 = 1 || pMod5 = 4
-        | 6 ->
-            // p mod 24 == 19 or p mod 24 == 23
-            let pMod24 = int (pBI % (BigInteger 24))
-            pMod24 = 19 || pMod24 = 23
-        | 7 ->
-            // p mod 7 == 3 or p mod 7 == 4 or p mod 7 == 5 or p mod 7 == 6
-            let pMod7 = int (pBI % (BigInteger 7))
-            pMod7 = 3 || pMod7 = 4 || pMod7 = 5 || pMod7 = 6
+    let private isSafePrime (p: BigInteger) (pBytes: byte[]) : bool =
+        let key =
+            use sha = SHA256.Create()
+            System.Convert.ToBase64String(sha.ComputeHash pBytes)
+
+        match safePrimeCache.TryGetValue key with
+        | true, cached -> cached
         | _ ->
-            // Unknown generator, accept if basic checks pass
-            true
+            let ok = isProbablePrime p 64 && isProbablePrime ((p - BigInteger.One) >>> 1) 64
+            if ok then safePrimeCache[key] <- true
+            ok
+
+    /// Validate the server's DH parameters (g, dh_prime). Enforces that g is one of the six
+    /// generators Telegram permits (2..7) with its residue condition, that dh_prime is exactly
+    /// 2048 bits, and that dh_prime is a safe prime (both p and (p-1)/2 are prime). A malicious
+    /// server that skipped any of these could otherwise force a recoverable auth key.
+    let validateDhParams (g: int) (p: byte[]) : bool =
+        if g < 2 || g > 7 then
+            false
+        elif p.Length <> 256 then
+            false
+        else
+            let pBI = toBigInteger p
+
+            if pBI < (BigInteger.One <<< 2047) || pBI >= (BigInteger.One <<< 2048) then
+                false
+            else
+                let gOk =
+                    match g with
+                    | 2 -> int (pBI % BigInteger 8) = 7
+                    | 3 -> int (pBI % BigInteger 3) = 2
+                    | 4 -> true
+                    | 5 -> let m = int (pBI % BigInteger 5) in m = 1 || m = 4
+                    | 6 -> let m = int (pBI % BigInteger 24) in m = 19 || m = 23
+                    | 7 -> let m = int (pBI % BigInteger 7) in m = 3 || m = 4 || m = 5 || m = 6
+                    | _ -> false
+
+                gOk && isSafePrime pBI p

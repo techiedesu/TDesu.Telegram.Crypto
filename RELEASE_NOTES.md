@@ -1,3 +1,23 @@
+## 0.3.0
+
+### Security
+
+**RSA_PAD encryption (`Rsa.encryptPad`).** Adds MTProto's current OAEP+-style RSA
+padding scheme for `p_q_inner_data`, alongside the classic `Rsa.encrypt` (kept for
+callers that need it). Ships the current production RSA key
+(fingerprint `0xd09d1d85de64fd85`) that the servers require for RSA_PAD; the two
+legacy keys remain for the classic scheme.
+
+**Hardened DH parameter validation.** `DiffieHellman.validateDhParams` now enforces
+`g ∈ {2..7}` with its residue condition, a 2048-bit `dh_prime`, and a real
+Miller-Rabin safe-prime test — both `p` and `(p-1)/2` prime, 64 cryptographically
+random-base rounds, positive results memoised. Previously the "safe prime" check was
+only a parity test and the generator bound accepted any `g > 7`, so a malicious
+server could have supplied a weak prime and recovered the auth key.
+`DiffieHellman.validateGARange` now enforces the recommended
+`2^{2048-64} ≤ g_a ≤ dh_prime − 2^{2048-64}` margin instead of the minimal
+`1 < g_a < p−1` bound.
+
 ## 0.1.0
 
 Initial release. Extracted from SedBot MTProto server.
