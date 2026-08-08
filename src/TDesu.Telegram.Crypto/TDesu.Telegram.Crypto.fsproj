@@ -21,6 +21,14 @@
         <None Include="../../README.md" Pack="true" PackagePath="/" />
     </ItemGroup>
     <ItemGroup>
+        <!-- The managed AES block cipher is internal: nothing outside this library
+             should choose it, `AesEcb` decides. Its test vectors must reach it
+             directly, though — validating it only through the dispatcher would let a
+             machine that has platform AES pass the suite without ever running it. -->
+        <InternalsVisibleTo Include="TDesu.Telegram.Crypto.Tests" />
+    </ItemGroup>
+    <ItemGroup>
+        <Compile Include="ManagedAes.fs" />
         <Compile Include="AesIge.fs" />
         <Compile Include="KeyDerivation.fs" />
         <Compile Include="Rsa.fs" />

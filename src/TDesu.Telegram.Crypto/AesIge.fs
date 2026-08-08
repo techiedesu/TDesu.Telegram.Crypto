@@ -16,13 +16,9 @@ module AesIge =
         Guard.isTrue (nameof key) "Key must be 32 bytes" (key.Length = 32)
         Guard.isTrue (nameof iv) "IV must be 32 bytes" (iv.Length = 32)
 
-        use aes = Aes.Create()
-        aes.Mode <- CipherMode.ECB
-        aes.Padding <- PaddingMode.None
-        aes.KeySize <- 256
-        aes.Key <- key
-
-        use encryptor = aes.CreateEncryptor()
+        // Not `Aes.Create()` directly: browser-wasm has no AES, and this is the code
+        // path every encrypted MTProto message takes.
+        use encryptor = AesEcb.createEncryptor key
         let blockCount = data.Length / BlockSize
         let result = Array.zeroCreate<byte> data.Length
         let prevPlain = Array.zeroCreate<byte> BlockSize
@@ -59,13 +55,7 @@ module AesIge =
         Guard.isTrue (nameof key) "Key must be 32 bytes" (key.Length = 32)
         Guard.isTrue (nameof iv) "IV must be 32 bytes" (iv.Length = 32)
 
-        use aes = Aes.Create()
-        aes.Mode <- CipherMode.ECB
-        aes.Padding <- PaddingMode.None
-        aes.KeySize <- 256
-        aes.Key <- key
-
-        use decryptor = aes.CreateDecryptor()
+        use decryptor = AesEcb.createDecryptor key
         let blockCount = data.Length / BlockSize
         let result = Array.zeroCreate<byte> data.Length
         let prevCipher = Array.zeroCreate<byte> BlockSize

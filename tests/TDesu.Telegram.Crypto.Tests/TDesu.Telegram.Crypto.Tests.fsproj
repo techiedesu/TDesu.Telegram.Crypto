@@ -7,6 +7,7 @@
     <ItemGroup>
         <Compile Include="TestHelpers.fs" />
         <Compile Include="Crypto\AesIgeTests.fs" />
+        <Compile Include="Crypto\ManagedAesTests.fs" />
         <Compile Include="Crypto\KeyDerivationTests.fs" />
         <Compile Include="Crypto\DiffieHellmanTests.fs" />
         <Compile Include="Crypto\DhValidationTests.fs" />
