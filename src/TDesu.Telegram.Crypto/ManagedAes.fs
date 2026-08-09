@@ -58,16 +58,25 @@ module internal ManagedAes =
     // single wrong nibble would produce a cipher that still encrypts and decrypts
     // consistently with itself while being incompatible with every other AES.
     let private sbox =
-        let inverse = Array.zeroCreate<byte> 256
+        // Inverses via the log/antilog tables of the field's generator 3, which is 512
+        // steps. The obvious alternative — trying every pair until the product is 1 —
+        // is 65k multiplications at type-initialisation time, and under a WebAssembly
+        // interpreter that is a visible stall before the first byte is ever encrypted.
+        let antilog = Array.zeroCreate<byte> 255
+        let log = Array.zeroCreate<int> 256
+        let mutable x = 1uy
 
-        // Brute-force the multiplicative inverse: 256 entries, once.
-        for a in 1..255 do
-            for b in 1..255 do
-                if gmul (byte a) (byte b) = 1uy then
-                    inverse[a] <- byte b
+        for i in 0..254 do
+            antilog[i] <- x
+            log[int x] <- i
+            // Multiply by the generator 3 = x + 1.
+            x <- x ^^^ xtime x
+
+        let inverse (a: byte) =
+            if a = 0uy then 0uy else antilog[(255 - log[int a]) % 255]
 
         Array.init 256 (fun i ->
-            let x = inverse[i]
+            let x = inverse (byte i)
 
             let rotl (v: byte) n =
                 (v <<< n) ||| (v >>> (8 - n))
@@ -153,23 +162,38 @@ module internal ManagedAes =
             for c in 0..3 do
                 state[r + 4 * c] <- source[r + 4 * ((c - r + 4) % 4)]
 
+    // MixColumns multiplies by a fixed handful of constants, so the products are
+    // tabulated once instead of running the doubling loop per byte per round. The
+    // straightforward version cost roughly a thousand loop iterations per block, which
+    // is invisible on a desktop and ruinous in WebAssembly: it turned an MTProto
+    // handshake into minutes of blocked UI.
+    let private mulTable (multiplier: byte) =
+        Array.init 256 (fun i -> gmul (byte i) multiplier)
+
+    let private mul2 = mulTable 2uy
+    let private mul3 = mulTable 3uy
+    let private mul9 = mulTable 9uy
+    let private mul11 = mulTable 11uy
+    let private mul13 = mulTable 13uy
+    let private mul14 = mulTable 14uy
+
     let private mixColumns (state: byte[]) =
         for c in 0..3 do
             let o = 4 * c
-            let a0, a1, a2, a3 = state[o], state[o + 1], state[o + 2], state[o + 3]
-            state[o] <- gmul a0 2uy ^^^ gmul a1 3uy ^^^ a2 ^^^ a3
-            state[o + 1] <- a0 ^^^ gmul a1 2uy ^^^ gmul a2 3uy ^^^ a3
-            state[o + 2] <- a0 ^^^ a1 ^^^ gmul a2 2uy ^^^ gmul a3 3uy
-            state[o + 3] <- gmul a0 3uy ^^^ a1 ^^^ a2 ^^^ gmul a3 2uy
+            let a0, a1, a2, a3 = int state[o], int state[o + 1], int state[o + 2], int state[o + 3]
+            state[o] <- mul2[a0] ^^^ mul3[a1] ^^^ byte a2 ^^^ byte a3
+            state[o + 1] <- byte a0 ^^^ mul2[a1] ^^^ mul3[a2] ^^^ byte a3
+            state[o + 2] <- byte a0 ^^^ byte a1 ^^^ mul2[a2] ^^^ mul3[a3]
+            state[o + 3] <- mul3[a0] ^^^ byte a1 ^^^ byte a2 ^^^ mul2[a3]
 
     let private invMixColumns (state: byte[]) =
         for c in 0..3 do
             let o = 4 * c
-            let a0, a1, a2, a3 = state[o], state[o + 1], state[o + 2], state[o + 3]
-            state[o] <- gmul a0 14uy ^^^ gmul a1 11uy ^^^ gmul a2 13uy ^^^ gmul a3 9uy
-            state[o + 1] <- gmul a0 9uy ^^^ gmul a1 14uy ^^^ gmul a2 11uy ^^^ gmul a3 13uy
-            state[o + 2] <- gmul a0 13uy ^^^ gmul a1 9uy ^^^ gmul a2 14uy ^^^ gmul a3 11uy
-            state[o + 3] <- gmul a0 11uy ^^^ gmul a1 13uy ^^^ gmul a2 9uy ^^^ gmul a3 14uy
+            let a0, a1, a2, a3 = int state[o], int state[o + 1], int state[o + 2], int state[o + 3]
+            state[o] <- mul14[a0] ^^^ mul11[a1] ^^^ mul13[a2] ^^^ mul9[a3]
+            state[o + 1] <- mul9[a0] ^^^ mul14[a1] ^^^ mul11[a2] ^^^ mul13[a3]
+            state[o + 2] <- mul13[a0] ^^^ mul9[a1] ^^^ mul14[a2] ^^^ mul11[a3]
+            state[o + 3] <- mul11[a0] ^^^ mul13[a1] ^^^ mul9[a2] ^^^ mul14[a3]
 
     /// One block, in place from `source` into `destination`.
     let encryptBlock (roundKeys: byte[]) (source: byte[]) (sourceOffset: int) (destination: byte[]) (destinationOffset: int) =
