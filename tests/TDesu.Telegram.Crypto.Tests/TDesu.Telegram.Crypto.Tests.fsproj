@@ -11,6 +11,7 @@
         <Compile Include="Crypto\KeyDerivationTests.fs" />
         <Compile Include="Crypto\DiffieHellmanTests.fs" />
         <Compile Include="Crypto\DhValidationTests.fs" />
+        <Compile Include="Crypto\SrpTests.fs" />
         <Compile Include="Crypto\PaddingTests.fs" />
         <Compile Include="Crypto\AuthKeyIdTests.fs" />
         <Compile Include="Crypto\RsaTests.fs" />

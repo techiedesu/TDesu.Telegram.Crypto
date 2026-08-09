@@ -33,6 +33,7 @@
         <Compile Include="KeyDerivation.fs" />
         <Compile Include="Rsa.fs" />
         <Compile Include="DiffieHellman.fs" />
+        <Compile Include="Srp.fs" />
         <Compile Include="Padding.fs" />
         <Compile Include="AuthKeyId.fs" />
     </ItemGroup>
