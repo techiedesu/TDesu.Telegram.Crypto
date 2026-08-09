@@ -107,23 +107,49 @@ module DiffieHellman =
 
             probablyPrime
 
+    /// Telegram's canonical 2048-bit safe prime — the value official clients ship and
+    /// servers offer in practice.
+    ///
+    /// Recognising it is not a shortcut around the check, it is a stronger form of it:
+    /// a fixed value verified once and pinned beats re-deriving the same answer
+    /// probabilistically on every connection. What it buys is the difference between a
+    /// usable client and an unusable one — the two Miller-Rabin passes below are 128
+    /// modular exponentiations, which cost milliseconds on a desktop and about three and
+    /// a half minutes under a WebAssembly interpreter, where one 2048-bit `ModPow`
+    /// measures 1.7 seconds.
+    let private knownSafePrime =
+        Rsa.hexToBytes (
+            "C71CAEB9C6B1C9048E6C522F70F13F73980D40238E3E21C14934D037563D930F"
+            + "48198A0AA7C14058229493D22530F4DBFA336F6E0AC925139543AED44CCE7C37"
+            + "20FD51F69458705AC68CD4FE6B6B13ABDC9746512969328454F18FAF8C595F64"
+            + "2477FE96BB2A941D5BCD1D4AC8CC49880708FA9B378E3C4F3A9060BEE67CF9A4"
+            + "A4A695811051907E162753B56B0F6B410DBA74D8A84B2A14B3144E0EF1284754"
+            + "FD17ED950D5965B4B9DD46582DB1178D169C6BC465B0D6FF9CA3928FEF5B9AE4"
+            + "E418FC15E83EBEA0F87FA9FF5EED70050DED2849F47BF959D956850CE929851F"
+            + "0D8115F635B105EE2E4E15D04B2454BF6F4FADF034B10403119CD8E3B92FCC5B"
+        )
+
     // Safe-prime verification is expensive, so successful results are memoised by prime.
     // Only positive results are cached (a tiny set in practice), so a malicious server cannot
-    // fill memory with distinct rejected primes.
+    // fill memory with distinct rejected primes. The cache is per-process, so a browser tab
+    // pays for an unrecognised prime again on every reload.
     let private safePrimeCache =
         System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
     let private isSafePrime (p: BigInteger) (pBytes: byte[]) : bool =
-        let key =
-            use sha = SHA256.Create()
-            System.Convert.ToBase64String(sha.ComputeHash pBytes)
+        if System.Linq.Enumerable.SequenceEqual(pBytes, knownSafePrime) then
+            true
+        else
+            let key =
+                use sha = SHA256.Create()
+                System.Convert.ToBase64String(sha.ComputeHash pBytes)
 
-        match safePrimeCache.TryGetValue key with
-        | true, cached -> cached
-        | _ ->
-            let ok = isProbablePrime p 64 && isProbablePrime ((p - BigInteger.One) >>> 1) 64
-            if ok then safePrimeCache[key] <- true
-            ok
+            match safePrimeCache.TryGetValue key with
+            | true, cached -> cached
+            | _ ->
+                let ok = isProbablePrime p 64 && isProbablePrime ((p - BigInteger.One) >>> 1) 64
+                if ok then safePrimeCache[key] <- true
+                ok
 
     /// Validate the server's DH parameters (g, dh_prime). Enforces that g is one of the six
     /// generators Telegram permits (2..7) with its residue condition, that dh_prime is exactly
