@@ -73,3 +73,27 @@ type DhValidationTests() =
         // Exactly 2^1984 sits on the lower margin and well below p - 2^1984.
         let atMargin = Array.zeroCreate 256 in atMargin[7] <- 1uy
         Assert.That(DiffieHellman.validateGARange atMargin realPrime, Is.True)
+
+    [<Test>]
+    member _.``generatorResidueOk follows the spec's table for every generator``() =
+        // core.telegram.org/mtproto/auth_key: g=2 needs p mod 8 = 7; g=3 p mod 3 = 2; g=4 nothing;
+        // g=5 p mod 5 = 1 or 4; g=6 p mod 24 = 19 or 23; g=7 p mod 7 = 3, 5 or 6.
+        let ok g (p: int) = DiffieHellman.generatorResidueOk g (System.Numerics.BigInteger p)
+        Assert.That(ok 2 15, Is.True)
+        Assert.That(ok 2 11, Is.False)
+        Assert.That(ok 3 11, Is.True)
+        Assert.That(ok 3 10, Is.False)
+        Assert.That(ok 4 10, Is.True)
+        Assert.That(ok 5 11, Is.True)
+        Assert.That(ok 5 14, Is.True)
+        Assert.That(ok 5 12, Is.False)
+        Assert.That(ok 6 43, Is.True)
+        Assert.That(ok 6 47, Is.True)
+        Assert.That(ok 6 25, Is.False)
+        Assert.That(ok 7 10, Is.True)
+        Assert.That(ok 7 12, Is.True)
+        Assert.That(ok 7 13, Is.True)
+        // p mod 7 = 4 was accepted before 0.3.3; the spec never listed it.
+        Assert.That(ok 7 11, Is.False)
+        Assert.That(ok 7 8, Is.False)
+        Assert.That(ok 8 10, Is.False)

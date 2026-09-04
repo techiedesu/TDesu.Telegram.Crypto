@@ -1,3 +1,15 @@
+## 0.3.3
+
+### Security
+
+**`g = 7` no longer accepts `p mod 7 = 4`.** MTProto's table for the permitted generators
+(core.telegram.org/mtproto/auth_key) gives `p mod 7 = 3, 5 or 6` for `g = 7`; the check accepted
+4 as well, so a server offering `g = 7` with such a prime passed validation the spec says to refuse.
+The five other generators were already correct. The residue table is now its own function,
+`DiffieHellman.generatorResidueOk g p`, so it can be tested on small integers without minting a
+2048-bit safe prime per case — the new test covers every row of the table, including the one that
+was wrong.
+
 ## 0.3.0
 
 ### Security

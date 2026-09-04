@@ -151,6 +151,21 @@ module DiffieHellman =
                 if ok then safePrimeCache[key] <- true
                 ok
 
+    /// The residue condition MTProto attaches to each permitted generator, verbatim from
+    /// core.telegram.org/mtproto/auth_key: it is what makes `g` generate the whole quadratic-residue
+    /// subgroup of a safe prime rather than a smaller one. `g = 7` requires `p mod 7 = 3, 5 or 6`;
+    /// this accepted 4 as well until 0.3.3 — read off the wrong table — and a server offering
+    /// `g = 7` with such a prime would have passed validation the spec says to refuse.
+    let generatorResidueOk (g: int) (p: BigInteger) : bool =
+        match g with
+        | 2 -> int (p % BigInteger 8) = 7
+        | 3 -> int (p % BigInteger 3) = 2
+        | 4 -> true
+        | 5 -> let m = int (p % BigInteger 5) in m = 1 || m = 4
+        | 6 -> let m = int (p % BigInteger 24) in m = 19 || m = 23
+        | 7 -> let m = int (p % BigInteger 7) in m = 3 || m = 5 || m = 6
+        | _ -> false
+
     /// Validate the server's DH parameters (g, dh_prime). Enforces that g is one of the six
     /// generators Telegram permits (2..7) with its residue condition, that dh_prime is exactly
     /// 2048 bits, and that dh_prime is a safe prime (both p and (p-1)/2 are prime). A malicious
@@ -166,14 +181,4 @@ module DiffieHellman =
             if pBI < (BigInteger.One <<< 2047) || pBI >= (BigInteger.One <<< 2048) then
                 false
             else
-                let gOk =
-                    match g with
-                    | 2 -> int (pBI % BigInteger 8) = 7
-                    | 3 -> int (pBI % BigInteger 3) = 2
-                    | 4 -> true
-                    | 5 -> let m = int (pBI % BigInteger 5) in m = 1 || m = 4
-                    | 6 -> let m = int (pBI % BigInteger 24) in m = 19 || m = 23
-                    | 7 -> let m = int (pBI % BigInteger 7) in m = 3 || m = 4 || m = 5 || m = 6
-                    | _ -> false
-
-                gOk && isSafePrime pBI p
+                generatorResidueOk g pBI && isSafePrime pBI p
