@@ -32,7 +32,7 @@ server could have supplied a weak prime and recovered the auth key.
 
 ## 0.1.0
 
-Initial release. Extracted from SedBot MTProto server.
+Initial release. Extracted from a Telegram MTProto server implementation.
 
 ### Modules
 - AesIge: AES-256-IGE encryption/decryption (MTProto message encryption)
