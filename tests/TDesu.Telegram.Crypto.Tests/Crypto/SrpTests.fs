@@ -1,15 +1,17 @@
 namespace TDesu.Crypto.Tests
 
+open System.Numerics
+open System.Security.Cryptography
 open NUnit.Framework
 open TDesu.Crypto
 open TDesu.Crypto.Tests
 
-/// Known-answer vectors ported from Altergram's own tests
-/// (tests/Altergram.Tests/SrpTests.cs), which cross-check its Srp.cs — the server
-/// this client's auth.checkPassword actually talks to — against a second,
-/// independent implementation (tools/srp-vectors.fsx in that repo). Reproducing
-/// the same (password, salt1, salt2, secret) inputs here and landing on the same
-/// A/M1 checks this module against both of those, not just against itself.
+/// Known-answer vectors ported from an independent implementation's own tests,
+/// which cross-check its own SRP implementation — the server this client's
+/// auth.checkPassword actually talks to — against a second, independent
+/// implementation. Reproducing the same (password, salt1, salt2, secret) inputs
+/// here and landing on the same A/M1 checks this module against both of those,
+/// not just against itself.
 [<TestFixture>]
 type SrpTests() =
 
@@ -33,9 +35,10 @@ type SrpTests() =
     let salt2 = Array.init 32 (fun i -> byte (i + 32))
     let clientSecret = Array.init 256 (fun i -> byte ((i * 7 + 1) % 256))
 
-    // account.getPassword's srp_B for this exchange. A known-answer value from
-    // Altergram's suite (there, derived from a server secret this module never
-    // needs — a real client only ever receives B over the wire).
+    // account.getPassword's srp_B for this exchange. A known-answer value from an
+    // independent implementation's own test suite (there, derived from a server
+    // secret this module never needs — a real client only ever receives B over
+    // the wire).
     let serverPublicB =
         Rsa.hexToBytes (
             "2041ED7B9CFC9A691A9C018A4862A997FD7EBB8539B1AAE6A43989CF9354B1C9"
@@ -71,19 +74,83 @@ type SrpTests() =
         equals (Srp.passwordHash password salt1 salt2) expectedX
 
     [<Test>]
-    member _.``clientProof matches the reference A and M1``() =
-        let a, m1 = Srp.clientProof password salt1 salt2 g p serverPublicB clientSecret
+    member _.``clientProofWithSecret matches the reference A and M1``() =
+        let a, m1 = Srp.clientProofWithSecret password salt1 salt2 g p serverPublicB clientSecret
         equals a expectedA
         equals m1 expectedM1
 
     [<Test>]
-    member _.``clientProof returns a full-width srp_A``() =
-        let a, _ = Srp.clientProof password salt1 salt2 g p serverPublicB clientSecret
+    member _.``clientProofWithSecret returns a full-width srp_A``() =
+        let a, _ = Srp.clientProofWithSecret password salt1 salt2 g p serverPublicB clientSecret
         equals a.Length p.Length
 
     [<Test>]
     member _.``a wrong password produces a different M1``() =
         let _, m1 =
-            Srp.clientProof "correct horse battery stapl" salt1 salt2 g p serverPublicB clientSecret
+            Srp.clientProofWithSecret "correct horse battery stapl" salt1 salt2 g p serverPublicB clientSecret
 
         notEquals m1 expectedM1
+
+    [<Test>]
+    member _.``clientProof succeeds for a valid group and server public value``() =
+        match Srp.clientProof password salt1 salt2 g p serverPublicB with
+        | Ok proof ->
+            equals proof.ClientPublic.Length p.Length
+            equals proof.Proof.Length 32
+        | Error e -> Assert.Fail($"expected Ok, got Error \"{e}\"")
+
+    /// `clientProof` draws its own client secret via a CSPRNG (unlike
+    /// `clientProofWithSecret`, which is pinned to a fixed one for the
+    /// known-answer vectors above), so two calls with identical inputs must not
+    /// agree on `srp_A` — a fixed secret across attempts is exactly what SRP must
+    /// not do in production.
+    [<Test>]
+    member _.``clientProof draws a fresh secret each call, so srp_A varies``() =
+        match Srp.clientProof password salt1 salt2 g p serverPublicB,
+              Srp.clientProof password salt1 salt2 g p serverPublicB with
+        | Ok first, Ok second -> notEquals first.ClientPublic second.ClientPublic
+        | results -> Assert.Fail($"expected both calls to succeed, got {results}")
+
+    [<Test>]
+    member _.``clientProof rejects an invalid DH group``() =
+        let notASafePrime = Array.create 256 0xFFuy // 2^2048 - 1: odd, right size, composite
+
+        match Srp.clientProof password salt1 salt2 g notASafePrime serverPublicB with
+        | Error _ -> ()
+        | Ok _ -> Assert.Fail("expected the invalid group to be rejected")
+
+    [<Test>]
+    member _.``clientProof rejects a server public value outside 1 < B < p-1``() =
+        match Srp.clientProof password salt1 salt2 g p (Array.zeroCreate 256) with
+        | Error _ -> ()
+        | Ok _ -> Assert.Fail("expected B = 0 to be rejected")
+
+        let pMinusOne = Array.copy p
+        pMinusOne[pMinusOne.Length - 1] <- pMinusOne[pMinusOne.Length - 1] - 1uy
+
+        match Srp.clientProof password salt1 salt2 g p pMinusOne with
+        | Error _ -> ()
+        | Ok _ -> Assert.Fail("expected B = p - 1 to be rejected")
+
+    /// A server that could force `B ≡ k*v (mod p)` would let an attacker solve for
+    /// the password verifier directly instead of merely checking a proof against
+    /// it — the one condition core.telegram.org/api/srp calls out by name.
+    /// Constructed independently of `Srp.fs`'s own `h`/padding helpers via the
+    /// internal `BigEndian` module, so this does not just re-run the
+    /// implementation's own arithmetic back at itself.
+    [<Test>]
+    member _.``clientProof rejects a degenerate B where B - k*v = 0 (mod p)``() =
+        let size = p.Length
+        let pi = BigEndian.toBigInteger p
+        let gInt = BigInteger g
+        let gPad = BigEndian.toBytes size gInt
+
+        use sha256 = SHA256.Create()
+        let k = BigEndian.toBigInteger (sha256.ComputeHash(Array.append p gPad))
+        let x = BigEndian.toBigInteger (Srp.passwordHash password salt1 salt2)
+        let v = BigInteger.ModPow(gInt, x, pi)
+        let degenerateB = BigEndian.toBytes size ((k * v) % pi)
+
+        match Srp.clientProof password salt1 salt2 g p degenerateB with
+        | Error _ -> ()
+        | Ok _ -> Assert.Fail("expected a degenerate B (B = k*v mod p) to be rejected")

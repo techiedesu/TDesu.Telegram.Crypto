@@ -1,6 +1,7 @@
 namespace TDesu.Crypto
 
 open System
+open System.Buffers.Binary
 open System.Security.Cryptography
 
 [<RequireQualifiedAccess>]
@@ -16,7 +17,12 @@ module AuthKeyId =
         use hasher = SHA256.Create()
         hasher.ComputeHash(data)
 
-    /// auth_key_id = SHA1(auth_key)[12..19] interpreted as int64 LE
+    /// auth_key_id = SHA1(auth_key)[12..19], read as a little-endian int64 —
+    /// MTProto's own wire byte order (core.telegram.org/mtproto/description),
+    /// which is also what every consumer's comment on this value already
+    /// assumes. `BitConverter.ToInt64` used to read this host-endian instead,
+    /// which only agreed with the spec because every host this library has
+    /// actually run on so far is itself little-endian.
     let compute (authKey: byte[]) : int64 =
         let hash = sha1 authKey
-        BitConverter.ToInt64(hash, 12)
+        BinaryPrimitives.ReadInt64LittleEndian(ReadOnlySpan<byte>(hash, 12, 8))

@@ -28,6 +28,7 @@
         <InternalsVisibleTo Include="TDesu.Telegram.Crypto.Tests" />
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="BigEndian.fs" />
         <Compile Include="ManagedAes.fs" />
         <Compile Include="AesIge.fs" />
         <Compile Include="KeyDerivation.fs" />

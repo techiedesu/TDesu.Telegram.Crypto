@@ -11,12 +11,17 @@ module Padding =
         RandomNumberGenerator.Fill(bytes)
         bytes
 
-    /// Add random padding (12-1024 bytes, result length divisible by 16).
+    /// Add random padding (always 12..27 bytes; result length divisible by 16).
     /// Used for auth_key-encrypted MTProto 2.0 messages — the post-auth wire
-    /// format requires padding ≥ 12 bytes to mask plaintext length.
+    /// format requires padding >= 12 bytes to mask plaintext length.
     /// For pre-auth handshake messages (server_DH_inner_data,
     /// client_DH_inner_data), use `addHandshakePadding` instead — TDLib's
     /// strict parser rejects > 15 bytes there with "Too much pad".
+    ///
+    /// The result is always in 12..27: 12 bytes minimum, plus whatever 0..15
+    /// extra bytes round the total up to the next multiple of 16, and 12 + 15
+    /// never exceeds 27. A previous version also clamped a `paddingLen > 1024`
+    /// case that this arithmetic can never reach — dead code removed in 0.4.0.
     let addPadding (data: byte[]) : byte[] =
         let minPadding = 12
         let dataLen = data.Length
@@ -32,17 +37,6 @@ module Padding =
 
         let paddingLen = totalLen - dataLen
 
-        // Ensure padding is within bounds (12..1024)
-        let paddingLen =
-            if paddingLen > 1024 then
-                // Should not happen with reasonable data, but clamp
-                let target = dataLen + 1024
-                let rem = target % 16
-                if rem = 0 then 1024
-                else 1024 - rem
-            else
-                paddingLen
-
         let result = Array.zeroCreate<byte> (dataLen + paddingLen)
         System.Buffer.BlockCopy(data, 0, result, 0, dataLen)
         let padding = randomBytes paddingLen
@@ -55,7 +49,7 @@ module Padding =
     /// where the result is then AES-IGE-256 encrypted. TDLib's
     /// `AuthKeyHandshake::on_server_dh_params` rejects > 15 padding bytes
     /// with "Too much pad" (Handshake.cpp:204) — distinct from the post-auth
-    /// `addPadding` (12..1024) rule.
+    /// `addPadding` (12..27) rule.
     let addHandshakePadding (data: byte[]) : byte[] =
         let rem = data.Length % 16
         if rem = 0 then

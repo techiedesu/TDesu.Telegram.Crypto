@@ -3,34 +3,13 @@
 open System
 open System.Numerics
 open System.Security.Cryptography
-open TDesu.FSharp
-open TDesu.FSharp.Operators
-open TDesu.FSharp.Buffers
+
+/// 2048-bit Diffie-Hellman key exchange as used in MTProto
+/// (core.telegram.org/mtproto/auth_key): generating this client's own exponent,
+/// computing `g^a mod p` and the shared `auth_key`, and validating a server's
+/// offered `(g, dh_prime)` and public values against the spec's safety margins.
 [<RequireQualifiedAccess>]
 module DiffieHellman =
-
-    /// Convert big-endian byte array to unsigned BigInteger (little-endian + sign byte)
-    let private toBigInteger (bigEndian: byte[]) : BigInteger =
-        let le = Array.copy bigEndian
-        Array.Reverse(le)
-        BigInteger(Bytes.concat2 le [| 0uy |])
-
-    /// Convert BigInteger back to big-endian byte array of specified length
-    let private fromBigInteger (bi: BigInteger) (length: int) : byte[] =
-        let bytes = bi.ToByteArray()
-        let trimmed =
-            if bytes.Length > 1 && bytes[bytes.Length - 1] = 0uy then
-                bytes[.. bytes.Length - 2]
-            else
-                bytes
-        let be = Array.copy trimmed
-        Array.Reverse(be)
-        if be.Length < length then
-            Bytes.concat2 (Array.zeroCreate (length - be.Length)) be
-        elif be.Length > length then
-            be[be.Length - length ..]
-        else
-            be
 
     /// Generate random 256-byte value for DH
     let generateA () : byte[] =
@@ -41,26 +20,26 @@ module DiffieHellman =
     /// Compute g^a mod p
     let computeGA (g: int) (a: byte[]) (p: byte[]) : byte[] =
         let gBI = BigInteger(g)
-        let aBI = toBigInteger a
-        let pBI = toBigInteger p
+        let aBI = BigEndian.toBigInteger a
+        let pBI = BigEndian.toBigInteger p
         let result = BigInteger.ModPow(gBI, aBI, pBI)
-        fromBigInteger result p.Length
+        BigEndian.toBytes p.Length result
 
     /// Compute g_b^a mod p (shared secret / auth_key)
     let computeAuthKey (gB: byte[]) (a: byte[]) (p: byte[]) : byte[] =
-        let gBBI = toBigInteger gB
-        let aBI = toBigInteger a
-        let pBI = toBigInteger p
+        let gBBI = BigEndian.toBigInteger gB
+        let aBI = BigEndian.toBigInteger a
+        let pBI = BigEndian.toBigInteger p
         let result = BigInteger.ModPow(gBBI, aBI, pBI)
-        fromBigInteger result 256
+        BigEndian.toBytes 256 result
 
     /// Validate that g_a or g_b lies within [2^{2048-64}, p - 2^{2048-64}], the stricter range
     /// recommended by the MTProto 2.0 security guidelines. This rejects the degenerate
     /// small-subgroup values (0, 1, p-1) and any value close enough to the bounds to leak the
     /// exponent; the minimal 1 < g_a < p-1 rule alone is not sufficient.
     let validateGARange (ga: byte[]) (p: byte[]) : bool =
-        let gaInt = toBigInteger ga
-        let pInt = toBigInteger p
+        let gaInt = BigEndian.toBigInteger ga
+        let pInt = BigEndian.toBigInteger p
         let margin = BigInteger.One <<< (2048 - 64)
         gaInt >= margin && gaInt <= (pInt - margin)
 
@@ -78,7 +57,12 @@ module DiffieHellman =
     /// Miller-Rabin probabilistic primality test with cryptographically random bases.
     /// Random bases (not fixed witnesses) are required because dh_prime is attacker-chosen;
     /// the adversarial error probability is 4^-rounds.
-    let private isProbablePrime (n: BigInteger) (rounds: int) : bool =
+    ///
+    /// `internal` (not `private`) rather than only reachable through `isSafePrime`'s
+    /// equality fast path below, so `DhValidationTests.fs` can run it directly on
+    /// `knownSafePrime` — proving the pinned bytes actually are prime, not just that
+    /// they equal themselves.
+    let internal isProbablePrime (n: BigInteger) (rounds: int) : bool =
         if n < BigInteger 2 then false
         elif n = BigInteger 2 || n = BigInteger 3 then true
         elif n.IsEven then false
@@ -117,7 +101,10 @@ module DiffieHellman =
     /// modular exponentiations, which cost milliseconds on a desktop and about three and
     /// a half minutes under a WebAssembly interpreter, where one 2048-bit `ModPow`
     /// measures 1.7 seconds.
-    let private knownSafePrime =
+    ///
+    /// `internal` so `DhValidationTests.fs` can run `isProbablePrime` on these exact
+    /// bytes directly — see `isProbablePrime`'s doc comment.
+    let internal knownSafePrime =
         Rsa.hexToBytes (
             "C71CAEB9C6B1C9048E6C522F70F13F73980D40238E3E21C14934D037563D930F"
             + "48198A0AA7C14058229493D22530F4DBFA336F6E0AC925139543AED44CCE7C37"
@@ -176,7 +163,7 @@ module DiffieHellman =
         elif p.Length <> 256 then
             false
         else
-            let pBI = toBigInteger p
+            let pBI = BigEndian.toBigInteger p
 
             if pBI < (BigInteger.One <<< 2047) || pBI >= (BigInteger.One <<< 2048) then
                 false

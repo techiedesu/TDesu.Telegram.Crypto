@@ -1,113 +1,97 @@
 ﻿namespace TDesu.Crypto
 
 open System
+open System.Buffers.Binary
 open System.Numerics
-open System.Collections.Generic
 open System.Security.Cryptography
 open TDesu.FSharp
-open TDesu.FSharp.Operators
 open TDesu.FSharp.Buffers
+
+/// RSA for MTProto's DH handshake: the current RSA_PAD scheme (`encryptPad`), which
+/// wraps `p_q_inner_data` so the rest of the exchange can be authenticated. There is
+/// no PKCS#1 padding anywhere here — MTProto defines its own encoding.
 [<RequireQualifiedAccess>]
 module Rsa =
 
+    /// An RSA public key as MTProto serves it: a fingerprint (for `resPQ`'s
+    /// `server_public_key_fingerprints`) plus the raw big-endian modulus and
+    /// exponent.
     type RsaPublicKey = {
         Fingerprint: int64
         Modulus: byte[]
         Exponent: byte[]
     }
 
-    /// Convert a hex string to byte array
+    /// Converts a hex string (spaces/newlines allowed) to a byte array.
     let hexToBytes (hex: string) : byte[] =
         let hex = hex.Replace(" ", "").Replace("\n", "").Replace("\r", "")
-        Array.init (hex.Length / 2) (fun i ->
-            Convert.ToByte(hex.Substring(i * 2, 2), 16))
+        Array.init (hex.Length / 2) (fun i -> Convert.ToByte(hex.Substring(i * 2, 2), 16))
 
-    /// Telegram production RSA public keys, in the order prod DCs advertise them in resPQ.
-    /// The first key (0xd09d1d85de64fd85) is the current key the servers expect for the RSA_PAD
-    /// scheme; the following two are legacy keys kept for the classic sha1(data)+data scheme.
-    /// Each modulus is the canonical 256-byte value — verified by recomputing its fingerprint.
+    /// Telegram's current production RSA_PAD key — the only one servers accept for
+    /// the handshake this library implements (`encryptPad`). 0.3.0 also shipped two
+    /// legacy keys for MTProto's classic `sha1(data)+data` raw-RSA scheme; nothing in
+    /// this library, `TDesu.Telegram.MTProto`, or TeleEye ever implemented that
+    /// scheme (the handshake always negotiates RSA_PAD), so those keys described
+    /// production DCs in a way nothing here could ever act on — removed in 0.4.0.
+    /// `fingerprintOf` reproduces this key's fingerprint independently of the
+    /// transcribed constant below.
     let publicKeys: RsaPublicKey list =
         [
             {
-                // 0xd09d1d85de64fd85 — RSA_PAD key
                 Fingerprint = 0xd09d1d85de64fd85L
                 Modulus =
                     hexToBytes
                         "E8BB3305C0B52C6CF2AFDF7637313489E63E05268E5BADB601AF417786472E5F93B85438968E20E6729A301C0AFC121BF7151F834436F7FDA680847A66BF64ACCEC78EE21C0B316F0EDAFE2F41908DA7BD1F4A5107638EEB67040ACE472A14F90D9F7C2B7DEF99688BA3073ADB5750BB02964902A359FE745D8170E36876D4FD8A5D41B2A76CBFF9A13267EB9580B2D06D10357448D20D9DA2191CB5D8C93982961CDFDEDA629E37F1FB09A0722027696032FE61ED663DB7A37F6F263D370F69DB53A0DC0A1748BDAAFF6209D5645485E6E001D1953255757E4B8E42813347B11DA6AB500FD0ACE7E6DFA3736199CCAF9397ED0745A427DCFA6CD67BCB1ACFF3"
                 Exponent = [| 0x01uy; 0x00uy; 0x01uy |] // 65537
             }
-            {
-                // 0x0bc35f3509f7b7a5
-                Fingerprint = 0x0bc35f3509f7b7a5L
-                Modulus =
-                    hexToBytes
-                        "AEEC36C8FFC109CB099624685B97815415657BD76D8C9C3E398103D7AD16C9BBA6F525ED0412D7AE2C2DE2B44E77D72CBF4B7438709A4E646A05C43427C7F184DEBF72947519680E651500890C6832796DD11F772C25FF8F576755AFE055B0A3752C696EB7D8DA0D8BE1FAF38C9BDD97CE0A77D3916230C4032167100EDD0F9E7A3A9B602D04367B689536AF0D64B613CCBA7962939D3B57682BEB6DAE5B608130B2E52ACA78BA023CF6CE806B1DC49C72CF928A7199D22E3D7AC84E47BC9427D0236945D10DBD15177BAB413FBF0EDFDA09F014C7A7DA088DDE9759702CA760AF2B8E4E97CC055C617BD74C3D97008635B98DC4D621B4891DA9FB0473047927"
-                Exponent = [| 0x01uy; 0x00uy; 0x01uy |] // 65537
-            }
-            {
-                // 0xc3b42b026ce86b21
-                Fingerprint = 0xc3b42b026ce86b21L
-                Modulus =
-                    hexToBytes
-                        "C150023E2F70DB7985DED064759CFECF0AF328E69A41DAF4D6F01B538135A6F91F8F8B2A0EC9BA9720CE352EFCF6C5680FFC424BD634864902DE0B4BD6D49F4E580230E3AE97D95C8B19442B3C0A10D8F5633FECEDD6926A7F6DAB0DDB7D457F9EA81B8465FCD6FFFEED114011DF91C059CAEDAF97625F6C96ECC74725556934EF781D866B34F011FCE4D835A090196E9A5F0E4449AF7EB697DDB9076494CA5F81104A305B6DD27665722C46B60E5DF680FB16B210607EF217652E60236C255F6A28315F4083A96791D7214BF64C1DF4FD0DB1944FB26A2A57031B32EEE64AD15A8BA68885CDE74A5BFC920F6ABF59BA5C75506373E7130F9042DA922179251F"
-                Exponent = [| 0x01uy; 0x00uy; 0x01uy |] // 65537
-            }
         ]
 
-    /// Additional keys registered at runtime (e.g. test server keys)
-    let private additionalKeys = List<RsaPublicKey>()
+    /// Telegram's RSA key fingerprint: the low 64 bits of `SHA1` over the TL
+    /// serialisation `rsa_public_key#7a19cb76 n:string e:string = RSAPublicKey`
+    /// (core.telegram.org/mtproto/auth_key). Lets `publicKeys` be checked against a
+    /// computed value instead of trusting the transcribed `Fingerprint` field alone —
+    /// the same transcription risk `DiffieHellman`'s safe-prime primality test closes
+    /// for the DH prime. `RsaTests.fs` asserts this reproduces `0xd09d1d85de64fd85`
+    /// for the shipped key.
+    let fingerprintOf (key: RsaPublicKey) : int64 =
+        // TL serialize_bytes: single-byte length prefix under 254, else 0xFE
+        // followed by a 3-byte little-endian length; the field is then padded to a
+        // 4-byte boundary.
+        let serializeBytes (data: byte[]) : byte[] =
+            let len = data.Length
 
-    /// Register an additional RSA public key (e.g. for test servers)
-    let addKey (key: RsaPublicKey) : unit =
-        additionalKeys.Add(key)
+            if len < 254 then
+                let total = 1 + len
+                Bytes.concat3 [| byte len |] data (Array.zeroCreate ((4 - total % 4) % 4))
+            else
+                let header = [| 254uy; byte (len &&& 0xff); byte ((len >>> 8) &&& 0xff); byte ((len >>> 16) &&& 0xff) |]
+                let total = 4 + len
+                Bytes.concat3 header data (Array.zeroCreate ((4 - total % 4) % 4))
 
-    /// Get all known RSA keys (production + registered)
-    let allKeys () : RsaPublicKey list =
-        let extra = additionalKeys |> Seq.toList
-        List.append publicKeys extra
+        let payload = Bytes.concat2 (serializeBytes key.Modulus) (serializeBytes key.Exponent)
+        use sha1 = SHA1.Create()
+        let hash = sha1.ComputeHash payload
+        BinaryPrimitives.ReadInt64LittleEndian(ReadOnlySpan<byte>(hash, hash.Length - 8, 8))
 
-    /// Clear all registered additional keys (for test teardown)
-    let clearAdditionalKeys () : unit =
-        additionalKeys.Clear()
-
-    /// Encrypt data with RSA for DH exchange.
-    /// Performs raw RSA: data^e mod n (big-endian, unsigned).
-    let encrypt (data: byte[]) (key: RsaPublicKey) : byte[] =
-        // MTProto uses big-endian for RSA, .NET BigInteger uses little-endian.
-        // Append 0x00 sign byte to ensure unsigned interpretation.
-        let toLEUnsigned (bigEndian: byte[]) =
-            let le = Array.copy bigEndian
-            Array.Reverse(le)
-            Bytes.concat2 le [| 0uy |]
-
-        let dataBI = BigInteger(toLEUnsigned data)
-        let modulusBI = BigInteger(toLEUnsigned key.Modulus)
-        let exponentBI = BigInteger(toLEUnsigned key.Exponent)
+    /// Raw textbook RSA: `data^e mod n`, big-endian in and out. Internal because the
+    /// only remaining caller is `encryptPad` below — nothing in this library or a
+    /// consumer implements MTProto's classic `sha1(data)+data` scheme that used to
+    /// call this directly (see `publicKeys` above). `encryptPad`'s `build` already
+    /// re-rolls its own output whenever it would land >= the modulus; every other
+    /// caller must stay below it too, so this throws instead of silently wrapping.
+    let internal rawEncrypt (data: byte[]) (key: RsaPublicKey) : byte[] =
+        let dataBI = BigEndian.toBigInteger data
+        let modulusBI = BigEndian.toBigInteger key.Modulus
+        Guard.isTrue (nameof data) "RSA input must be less than the modulus" (dataBI < modulusBI)
+        let exponentBI = BigEndian.toBigInteger key.Exponent
 
         let resultBI = BigInteger.ModPow(dataBI, exponentBI, modulusBI)
+        BigEndian.toBytes key.Modulus.Length resultBI
 
-        // Convert back to big-endian, strip sign byte, pad to modulus length
-        let resultBytes = resultBI.ToByteArray()
-        // Remove trailing zero (sign byte) if present, then reverse to big-endian
-        let trimmed =
-            if resultBytes.Length > 1 && resultBytes[resultBytes.Length - 1] = 0uy then
-                resultBytes[.. resultBytes.Length - 2]
-            else
-                resultBytes
-        let be = Array.copy trimmed
-        Array.Reverse(be)
-
-        // Pad with leading zeros to match modulus length
-        let modulusLen = key.Modulus.Length
-        if be.Length < modulusLen then
-            Bytes.concat2 (Array.zeroCreate (modulusLen - be.Length)) be
-        else
-            be
-
-    /// RSA_PAD encryption — MTProto's current, hardened scheme for p_q_inner_data. The classic
-    /// `encrypt` above (sha1(data)+data, raw RSA) is retained for callers that need it, but new
-    /// code should prefer this: the payload length is hidden, the data is AES-IGE wrapped under a
-    /// fresh random key, and the 256-byte block is re-rolled until it is below the RSA modulus.
+    /// RSA_PAD encryption — MTProto's current, hardened scheme for `p_q_inner_data`
+    /// (core.telegram.org/mtproto/auth_key#1-client-computes-encrypted-data): the
+    /// payload length is hidden, the data is AES-IGE wrapped under a fresh random
+    /// key, and the 256-byte block is re-rolled until it is below the RSA modulus.
     /// `data` (the serialized inner block) must be at most 144 bytes.
     let encryptPad (data: byte[]) (key: RsaPublicKey) : byte[] =
         if data.Length > 144 then
@@ -117,12 +101,7 @@ module Rsa =
             use h = SHA256.Create()
             h.ComputeHash b
 
-        let toUnsigned (be: byte[]) =
-            let le = Array.copy be
-            Array.Reverse(le)
-            BigInteger(Bytes.concat2 le [| 0uy |])
-
-        let modulusBI = toUnsigned key.Modulus
+        let modulusBI = BigEndian.toBigInteger key.Modulus
 
         // data_with_padding (192) -> reversed -> + SHA256(temp_key+data_with_padding) (224) ->
         // AES-IGE(temp_key, 0) -> temp_key XOR SHA256(aes) ++ aes (256). Retry if >= modulus.
@@ -142,6 +121,6 @@ module Rsa =
             let tempKeyXor = Array.map2 (^^^) tempKey (sha256 aesEncrypted)
             let keyAesEncrypted = Bytes.concat2 tempKeyXor aesEncrypted
 
-            if toUnsigned keyAesEncrypted >= modulusBI then build () else keyAesEncrypted
+            if BigEndian.toBigInteger keyAesEncrypted >= modulusBI then build () else keyAesEncrypted
 
-        encrypt (build ()) key
+        rawEncrypt (build ()) key

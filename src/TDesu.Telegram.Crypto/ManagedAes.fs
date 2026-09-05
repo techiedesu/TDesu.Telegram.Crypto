@@ -296,17 +296,38 @@ module AesEcb =
     /// True when the managed cipher is in use, i.e. the platform has no AES.
     let isManaged = not platformSupportsAes.Value
 
-    let private platformTransform (key: byte[]) (encrypting: bool) =
+    /// Wraps a platform transform together with the `Aes` instance that created
+    /// it, so disposing the transform -- the only handle a `use encryptor = ...`
+    /// call site ever keeps -- also disposes the `Aes`. Previously only the
+    /// transform was disposed and the `Aes` (holding a copy of the key) leaked for
+    /// the rest of the process's life on every call.
+    type private KeyOwningTransform(aes: Aes, transform: ICryptoTransform) =
+        interface ICryptoTransform with
+            member _.CanReuseTransform = transform.CanReuseTransform
+            member _.CanTransformMultipleBlocks = transform.CanTransformMultipleBlocks
+            member _.InputBlockSize = transform.InputBlockSize
+            member _.OutputBlockSize = transform.OutputBlockSize
+
+            member _.TransformBlock(inputBuffer, inputOffset, inputCount, outputBuffer, outputOffset) =
+                transform.TransformBlock(inputBuffer, inputOffset, inputCount, outputBuffer, outputOffset)
+
+            member _.TransformFinalBlock(inputBuffer, inputOffset, inputCount) =
+                transform.TransformFinalBlock(inputBuffer, inputOffset, inputCount)
+
+        interface IDisposable with
+            member _.Dispose() =
+                transform.Dispose()
+                aes.Dispose()
+
+    let private platformTransform (key: byte[]) (encrypting: bool) : ICryptoTransform =
         let aes = Aes.Create()
         aes.Mode <- CipherMode.ECB
         aes.Padding <- PaddingMode.None
         aes.KeySize <- 256
         aes.Key <- key
 
-        if encrypting then
-            aes.CreateEncryptor()
-        else
-            aes.CreateDecryptor()
+        let transform = if encrypting then aes.CreateEncryptor() else aes.CreateDecryptor()
+        new KeyOwningTransform(aes, transform) :> ICryptoTransform
 
     let createEncryptor (key: byte[]) : ICryptoTransform =
         if platformSupportsAes.Value then

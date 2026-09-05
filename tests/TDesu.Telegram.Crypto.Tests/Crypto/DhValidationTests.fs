@@ -97,3 +97,26 @@ type DhValidationTests() =
         Assert.That(ok 7 11, Is.False)
         Assert.That(ok 7 8, Is.False)
         Assert.That(ok 8 10, Is.False)
+
+    /// The audit's own point: `validateDhParams accepts the real Telegram safe
+    /// prime` above only proves `isSafePrime`'s equality fast path recognises
+    /// `realPrime` as itself — a mistyped constant in either transcription would
+    /// still pass that test as long as both happened to agree with each other.
+    /// This bypasses the fast path and runs the actual Miller-Rabin test
+    /// (`DiffieHellman.isProbablePrime`, `internal` via `InternalsVisibleTo`)
+    /// directly on the library's own pinned `knownSafePrime` and `(p-1)/2`, at
+    /// the same 64 rounds production uses — proving the shipped bytes really are
+    /// a safe prime, not just that they equal themselves.
+    [<Test>]
+    member _.``the pinned safe prime and (p-1)/2 are actually prime, fast path bypassed``() =
+        let p = BigEndian.toBigInteger DiffieHellman.knownSafePrime
+        Assert.That(DiffieHellman.isProbablePrime p 64, Is.True)
+        Assert.That(DiffieHellman.isProbablePrime ((p - System.Numerics.BigInteger.One) >>> 1) 64, Is.True)
+
+    /// Belt-and-suspenders alongside the primality test above: this file's own
+    /// `realPrime`, hand-transcribed from core.telegram.org with spaces, and
+    /// `DiffieHellman.knownSafePrime`, transcribed separately without them,
+    /// should be the exact same bytes.
+    [<Test>]
+    member _.``the pinned safe prime matches this test's own independent transcription``() =
+        equals DiffieHellman.knownSafePrime realPrime
