@@ -68,3 +68,47 @@ type PaddingTests() =
         let data = Array.init 50 (fun i -> byte i)
         let padded = Padding.addHandshakePadding data
         equals padded[..49] data
+
+    // paddedLength is the rule a caller sizes its own buffer with, so it has to agree with
+    // what addPadding actually produces for every length -- otherwise the two drift and the
+    // caller writes a frame the server reads as malformed.
+    [<Test>]
+    member _.``paddedLength agrees with addPadding over a full period``() =
+        for dataLen in 0..96 do
+            let padded = Padding.addPadding (Array.zeroCreate<byte> dataLen)
+            equals (Padding.paddedLength dataLen) padded.Length
+
+    [<Test>]
+    member _.``handshakePaddedLength agrees with addHandshakePadding over a full period``() =
+        for dataLen in 0..96 do
+            let padded = Padding.addHandshakePadding (Array.zeroCreate<byte> dataLen)
+            equals (Padding.handshakePaddedLength dataLen) padded.Length
+
+    [<Test>]
+    member _.``paddedLength keeps padding inside 12 to 27 and a 16-byte total``() =
+        for dataLen in 0..512 do
+            let total = Padding.paddedLength dataLen
+            let padding = total - dataLen
+            equals (total % 16) 0
+            Assert.That(padding, Is.InRange(12, 27), $"Failed for data length %d{dataLen}")
+
+    [<Test>]
+    member _.``fill writes random bytes only inside the destination``() =
+        let buffer = Array.zeroCreate<byte> 64
+        Padding.fill (System.Span(buffer, 16, 32))
+
+        // The untouched ends stay zero; the filled window is not left as zeros.
+        equals buffer[..15] (Array.zeroCreate<byte> 16)
+        equals buffer[48..] (Array.zeroCreate<byte> 16)
+        notEquals buffer[16..47] (Array.zeroCreate<byte> 32)
+
+    [<Test>]
+    member _.``fill accepts an empty destination``() =
+        let buffer = Array.zeroCreate<byte> 8
+        Padding.fill (System.Span(buffer, 8, 0))
+        equals buffer (Array.zeroCreate<byte> 8)
+
+    [<Test>]
+    member _.``paddedLength rejects a negative length``() =
+        Assert.Throws<System.ArgumentException>(fun () -> Padding.paddedLength -1 |> ignore)
+        |> ignore

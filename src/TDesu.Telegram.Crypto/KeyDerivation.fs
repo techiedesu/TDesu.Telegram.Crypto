@@ -1,5 +1,6 @@
 ﻿namespace TDesu.Crypto
 
+open System
 open System.Security.Cryptography
 open TDesu.FSharp
 open TDesu.FSharp.Buffers
@@ -53,17 +54,24 @@ module KeyDerivation =
 
         { Key = aesKey; Iv = aesIv }
 
-    /// msg_key = SHA256(auth_key[88+x..119+x] ++ plaintext)[8..23]  (16 bytes).
+    /// msg_key = SHA256(auth_key[88+x..119+x] ++ plaintext)[8..23]  (16 bytes), over a
+    /// plaintext the caller already holds somewhere — a slice of the frame it is building,
+    /// typically. The array overload below is this one plus a `ReadOnlySpan` wrapper; a
+    /// caller that has only a span would otherwise copy it into an array to be hashed.
     ///
     /// Appends the key slice, then the plaintext, directly to an `IncrementalHash`
     /// instead of concatenating them into one fresh array first — plaintext is the
     /// one input here that scales with message size, so this is the allocation the
     /// audit's "copies the whole plaintext to prepend 32 bytes" finding was about.
-    let computeMsgKey (authKey: byte[]) (plaintext: byte[]) (x: int) : byte[] =
+    let computeMsgKeyOf (authKey: byte[]) (plaintext: ReadOnlySpan<byte>) (x: int) : byte[] =
         Guard.isTrue (nameof authKey) "auth_key must be 256 bytes" (authKey.Length = 256)
 
         use hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256)
-        hasher.AppendData(authKey, 88 + x, 32)
+        hasher.AppendData(ReadOnlySpan(authKey, 88 + x, 32))
         hasher.AppendData(plaintext)
         let hash = hasher.GetHashAndReset()
         hash[8..23]
+
+    /// `computeMsgKeyOf` over a whole array.
+    let computeMsgKey (authKey: byte[]) (plaintext: byte[]) (x: int) : byte[] =
+        computeMsgKeyOf authKey (ReadOnlySpan plaintext) x

@@ -14,6 +14,25 @@ type KeyDerivationTests() =
         let msgKey = KeyDerivation.computeMsgKey authKey plaintext 0
         equals msgKey.Length 16
 
+    // The span overload is what a frame-building caller hashes its own buffer with; if it
+    // ever stopped matching the array one, two peers would disagree on msg_key.
+    [<Test>]
+    member _.``computeMsgKeyOf matches the array overload, including over a slice``() =
+        let authKey = Array.init 256 (fun i -> byte i)
+        let plaintext = Array.init 128 (fun i -> byte (i * 3))
+
+        for x in [ 0; 8 ] do
+            equals (KeyDerivation.computeMsgKeyOf authKey (System.ReadOnlySpan plaintext) x) (KeyDerivation.computeMsgKey authKey plaintext x)
+
+        // A slice of a larger buffer must hash as the slice alone, not as its surroundings:
+        // that is exactly how a frame hashes its padded plaintext out of the frame array.
+        let framed = Array.zeroCreate<byte> (24 + plaintext.Length + 16)
+        System.Buffer.BlockCopy(plaintext, 0, framed, 24, plaintext.Length)
+
+        equals
+            (KeyDerivation.computeMsgKeyOf authKey (System.ReadOnlySpan(framed, 24, plaintext.Length)) 0)
+            (KeyDerivation.computeMsgKey authKey plaintext 0)
+
     [<Test>]
     member _.``deriveAesKeyIv returns correct sizes``() =
         let authKey = Array.init 256 (fun i -> byte i)

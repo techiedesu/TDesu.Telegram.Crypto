@@ -1,3 +1,30 @@
+## 0.5.0
+
+### Span counterparts, so a caller can build a frame in one allocation
+
+`MessageFraming.encrypt` in TDesu.Telegram.MTProto allocates three full-size arrays per
+message — the writer's plaintext, its padded copy, and the frame the ciphertext lands in —
+measured at 3.01x the body size for a 256 KiB body. Two of those exist only because the
+padding rule and the msg_key hash were reachable only through `byte[]`. This release adds the
+pieces that let the caller size the frame up front and write the plaintext straight into it:
+
+- `Padding.paddedLength` / `Padding.handshakePaddedLength` — the length each `add*Padding`
+  produces, as arithmetic, so a buffer can be sized before anything is written into it.
+  `addPadding` and `addHandshakePadding` are now defined in terms of them: the 12..27 rule and
+  the 0..15 handshake rule each still live in exactly one place, which is why they were not
+  simply re-derived at the call site.
+- `Padding.fill` — fills a `Span<byte>` with cryptographic random bytes, for a caller that
+  already owns the buffer the padding belongs in. `randomBytes` stays as the array form.
+- `KeyDerivation.computeMsgKeyOf` — `computeMsgKey` over a `ReadOnlySpan<byte>`, so the hash
+  can run over a slice of the frame being built instead of a copy of it. `computeMsgKey` is
+  now a wrapper over it and is unchanged for callers.
+
+Against a prototype of the single-allocation framing these enable: 3.01x -> 1.01x of the body
+size and 1663 us -> 1002 us for a 256 KiB body, 3.10x -> 1.09x for 16 KiB. No existing
+behaviour changes — the additions are new names, and the array APIs produce what they always
+did, which `PaddingTests` now pins by comparing `paddedLength` against `addPadding` across a
+full 16-byte period and `computeMsgKeyOf` against `computeMsgKey` including over a slice.
+
 ## 0.4.0
 
 Follows the cross-library audit dated 2026-09-05 (`docs/tdesu-libraries-audit.md` in the
