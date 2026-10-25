@@ -1,3 +1,12 @@
+## 0.5.1
+
+### Changed
+- `BigEndian.toBytes` built its rejection message on every call. `Guard.isTrue` takes the
+  message as an argument, so the interpolation ran and was discarded each time — measured at
+  roughly 480 bytes and 260 ns for the same shape of guard in TDesu.Telegram.Serialization.
+  The message now sits behind the branch that raises it. This runs per modular exponentiation
+  in the DH handshake; behaviour and the exception it raises are unchanged.
+
 ## 0.5.0
 
 ### Span counterparts, so a caller can build a frame in one allocation

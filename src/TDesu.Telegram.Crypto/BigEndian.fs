@@ -30,7 +30,10 @@ module internal BigEndian =
     /// so overflow here means a caller's assumption broke, not a normal case to clamp.
     let toBytes (size: int) (value: BigInteger) : byte[] =
         let raw = value.ToByteArray(isUnsigned = true, isBigEndian = true)
-        Guard.isTrue (nameof value) $"value needs {raw.Length} bytes, wider than the requested {size}" (raw.Length <= size)
+        // The message stays behind the branch: as a `Guard.isTrue` argument it was
+        // interpolated on every call and discarded. This runs per DH exponentiation.
+        if raw.Length > size then
+            invalidArg (nameof value) $"value needs %d{raw.Length} bytes, wider than the requested %d{size}"
 
         let out = Array.zeroCreate<byte> size
         Array.blit raw 0 out (size - raw.Length) raw.Length
