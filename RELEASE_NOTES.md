@@ -1,3 +1,10 @@
+## 0.5.2
+
+### Changed
+- Depends on TDesu.FSharp 3.0.1 (was 2.0.0). The library uses `Bytes.copyTo`/`concat2`/`concat3`
+  and `Guard.isTrue`, all unchanged in 3.0; consumers on TDesu.FSharp 3.x no longer resolve this
+  package against a major version it was not built with.
+
 ## 0.5.1
 
 ### Changed
